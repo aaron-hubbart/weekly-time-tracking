@@ -7,6 +7,77 @@ description: Reconstruct Aaron's time tracking for any date range from Outlook c
 
 Reconstruct time entries for a target date range, allocate every hour to a customer or internal bucket, fill each covered workday to a minimum of 8.0 hours, and deliver an .ics file the user imports into the "Time Tracking" Outlook calendar. The user's existing sync then flows those events into the Master Time Tracking workbook, where formulas categorize and roll up automatically. The calendar is the source of truth; never write rows into the workbook's Data sheet directly, since the sync would duplicate them.
 
+## Prerequisites
+
+**Google Drive connector required.** Before doing anything else, verify the Google Drive connector is available by checking whether Drive tools are present in the tool list. If not, stop immediately and tell the user:
+
+> "This skill requires the Google Drive connector. Please enable it under Tools in the Claude sidebar, then re-run the skill."
+
+Do not proceed until Drive is confirmed available.
+
+## Config file
+
+The skill stores all user-specific configuration in a JSON file in Google Drive:
+
+- **Location**: `Claude Outputs/Configs/Time Tracking Config.json`
+- **File ID in memory**: stored as `time_tracking_config_id`
+
+### Loading the config
+
+On every run, after confirming Drive is available:
+
+1. Check memory for `time_tracking_config_id`. If present, fetch the file with `Google Drive:download_file_content` and parse the JSON. If the fetch fails, fall through to the setup flow.
+2. If no ID in memory, search Drive for `title = 'Time Tracking Config.json'` under the `Claude Outputs/Configs/` folder. If found, cache the ID in memory and load it.
+3. If not found anywhere, run the **First-run setup** flow below.
+
+### First-run setup
+
+1. Locate or create the `Claude Outputs` folder in Drive root. Then locate or create the `Configs` subfolder within it.
+2. Prompt the user for any required values that cannot be defaulted (see schema below).
+3. Build the config JSON with defaults filled in and user-supplied values inserted.
+4. Upload the file as `Time Tracking Config.json` to the `Configs` folder using `Google Drive:create_file` with `contentMimeType: application/json` and `disableConversionToGoogleType: true`.
+5. Store the returned file ID in memory: `memory_user_edits(command="add", control="time_tracking_config_id: [ID]")`.
+6. Confirm to the user: share the Drive URL and note which values were defaulted so they can review.
+
+### Updating the config
+
+Any time a config value changes during a run (user corrects a value, a new account pattern is added, etc.):
+
+1. Generate a CDT timestamp: `YYYYMMDD-HHMMSS`.
+2. Copy the current config file using `Google Drive:copy_file`:
+   - `fileId`: current `time_tracking_config_id`
+   - `title`: `Time Tracking Config-[timestamp].json`
+   - `parentId`: same folder as the original (get via `Google Drive:get_file_metadata` first)
+3. Upload the updated JSON as a new file named `Time Tracking Config.json` to the same folder.
+4. Update `time_tracking_config_id` in memory with the new file ID.
+5. Tell the user the config was updated and share both the new file URL and the backup URL.
+
+### Config schema
+
+```json
+{
+  "master_workbook_drive_id": "",
+  "time_tracking_calendar_name": "Time Tracking",
+  "daily_minimum_hours": 8.0,
+  "personal_calendar_exclusion_category": "z-Personal",
+  "customer_short_names": {},
+  "notes": ""
+}
+```
+
+Field definitions:
+
+| Field | Default | Required | Description |
+|---|---|---|---|
+| `master_workbook_drive_id` | none | **Yes** | Drive file ID for "Master Time Tracking.xlsx". Cannot be defaulted; prompt if missing. |
+| `time_tracking_calendar_name` | `"Time Tracking"` | No | Name of the Outlook calendar used as the target for .ics import. |
+| `daily_minimum_hours` | `8.0` | No | Minimum hours required per complete workday. |
+| `personal_calendar_exclusion_category` | `"z-Personal"` | No | Outlook calendar category to skip when gathering activity. |
+| `customer_short_names` | `{}` | No | Map of full account name to short token used in event names, e.g. `{"Bank of America": "Bank"}`. Populated over time as accounts are categorized. |
+| `notes` | `""` | No | Free-text notes field; ignored by the skill. |
+
+The `customer_short_names` map is the runtime equivalent of what was previously hardcoded in `references/category-mappings.md`. When the skill encounters an account name from the Asana portfolio and needs to pick or confirm a short token for calendar event naming, it checks this map first. If no entry exists, it prompts the user to confirm the token and then writes it back to the config via the update flow above.
+
 ## Process
 
 ### 1. Scope the date range
@@ -25,29 +96,31 @@ Multi-week ranges are supported: "last two weeks", "the last 3 weeks", "month of
 
 For ranges longer than one week, work week by week: gather and categorize the whole range up front, but present each week's confirmed breakdown separately and ask the gap-allocation question per week, since unscheduled time rarely went to the same place every week. Produce one .ics covering the full range, and give per-week and grand totals in the summary.
 
-The 8.0-hour daily minimum applies to each complete workday in the range. For "today" or a "this week" range that includes the current in-progress day, ask whether to fill the current day to 8.0 or record only confirmed activity (pass --daily-min 0 to the script for that case).
+The daily minimum applies to each complete workday in the range (from `daily_minimum_hours` in config, default 8.0). For "today" or a "this week" range that includes the current in-progress day, ask whether to fill the current day to the minimum or record only confirmed activity (pass --daily-min 0 to the script for that case).
 
-### 2. Read the config and resolve account status
+### 2. Load config and resolve account status
 
-Fetch the master workbook from Google Drive (search for "Master Time Tracking.xlsx" in the Time Tracking folder). Read the Config sheet to get the current customer list and name patterns. If the Drive fetch fails, use `references/category-mappings.md` as the fallback mapping source.
+Load the config file as described in the Config file section above. Extract `master_workbook_drive_id` and other settings for use in subsequent steps.
 
-Then fetch live subscriber status from the Enterprise Success Customers portfolio in Asana. Use `get_items_for_portfolio` with `opt_fields=name,custom_fields` and read the `Non-Subscriber?` custom field on each item. The portfolio GID and field GID are stored in your memory; do not hardcode them here.
+Then fetch the workbook from Drive using `master_workbook_drive_id`. Read the Config sheet to get the current customer list and name patterns. If the Drive fetch fails, use `references/category-mappings.md` as the fallback for pattern syntax only.
 
-Use the `Non-Subscriber?` field solely to determine prefix: `"Yes"` → `NS :: [Customer]`, `"No"` → `C :: [Customer]`. Do not use the portfolio to determine which accounts are yours; account assignment comes from the user's own customer list and calendar activity, not from portfolio membership.
+Then fetch live subscriber status from the Enterprise Success Customers portfolio in Asana. Use `get_items_for_portfolio` with `opt_fields=name,custom_fields` and read the `Non-Subscriber?` custom field on each item. The portfolio GID and field GID are stored in memory; do not put them in the config file.
+
+Use the `Non-Subscriber?` field solely to determine prefix: `"Yes"` → `NS :: [Customer]`, `"No"` → `C :: [Customer]`. Account assignment comes from the user's own calendar activity, not portfolio membership.
+
+For each account encountered, look up its short token in `customer_short_names` from the config. If no entry exists for that account, prompt the user to confirm the token, then write it back to the config via the update flow.
 
 If a customer name appears in calendar or Zoom activity but you cannot determine its subscriber status from the portfolio, stop and ask the user: "I found activity for [Customer] but could not confirm its subscriber status. Is this account a subscriber or non-subscriber?" Do not guess.
 
-Use the live portfolio data as the source of truth for subscriber status. Do not rely on `references/category-mappings.md` for that; the mappings file covers pattern syntax only.
-
 ### 3. Check what is already logged
 
-Search the "Time Tracking" calendar (calendarName parameter on the Outlook calendar search) for the target range. These entries are already in the system. Never regenerate them; count their hours toward daily totals using the workbook's rounding (minutes / 60, ceiling to 0.25).
+Search the calendar named in `time_tracking_calendar_name` (from config, default "Time Tracking") for the target range. These entries are already in the system. Never regenerate them; count their hours toward daily totals using the workbook's rounding (minutes / 60, ceiling to 0.25).
 
 ### 4. Gather activity
 
 Pull from all available sources:
 
-- Main Outlook calendar for the range. Exclude events with the z-Personal category and obviously personal items (medication reminders, workouts, family blocks).
+- Main Outlook calendar for the range. Exclude events with the category matching `personal_calendar_exclusion_category` (from config) and obviously personal items (medication reminders, workouts, family blocks).
 - Zoom meeting history for the same range. Zoom gives actual attendance and durations, which beat scheduled times. Solo meetings sourced from "my_notes" are heads-down working sessions; their topics usually reveal the customer.
 - If gaps remain, check recent Slack activity or Asana tasks for evidence of what was worked on.
 
@@ -55,10 +128,10 @@ Tentative calendar events with no Zoom evidence of attendance do not count.
 
 ### 5. Categorize and round
 
-Map each activity to exactly one bucket using `references/category-mappings.md`. There are three bucket types:
+Map each activity to exactly one bucket using `references/category-mappings.md` for pattern syntax and the config's `customer_short_names` for account tokens. There are three bucket types:
 
-- `C :: [Customer]` for ES subscriber accounts
-- `NS :: [Customer]` for non-subscriber accounts
+- `C :: [Token]` for ES subscriber accounts
+- `NS :: [Token]` for non-subscriber accounts
 - `Admin :: [bucket]` for internal overhead, mapped to the Internal Overhead [Enterprise-Success] phase in Precursive PSA
 
 Subscriber vs. non-subscriber status for each account comes from the live Asana portfolio lookup in step 2.
@@ -67,7 +140,7 @@ Event durations must be multiples of 30 minutes so hours land in 0.5 increments.
 
 ### 6. Confirm the gap allocation
 
-Sum the confirmed hours per day and present a concise breakdown. Each complete workday must reach at least 8.0 hours (40.0 for a full Mon-Fri week). Ask the user, with the interactive question interface, where unscheduled heads-down time went (customer work, internal tooling, toolkit PRs, and so on) and which internal bucket applies if unclear. Default unclear internal work to Admin :: General. Distribute the fill so each day reaches exactly 8.0 unless the user says otherwise.
+Sum the confirmed hours per day and present a concise breakdown. Each complete workday must reach the daily minimum from config. Ask the user, with the interactive question interface, where unscheduled heads-down time went and which internal bucket applies if unclear. Default unclear internal work to Admin :: General. Distribute the fill so each day reaches exactly the daily minimum unless the user says otherwise.
 
 ### 7. Generate the .ics
 
