@@ -1,6 +1,6 @@
 ---
 name: weekly-time-tracking
-description: Reconstruct Aaron's time tracking for any date range from Outlook calendar, Zoom history, and the Time Tracking calendar, then generate an .ics file of properly named events for import. Supports today, yesterday, this week, last week, week ending X, multi-week spans like last two weeks or a full month, or any explicit date range. Use this skill whenever the user mentions time tracking, timesheets, logging hours, booking time, time entry, a time breakdown by customer or bucket, or filling out time for a day or week. Also trigger on phrases like "track my time", "log my hours", "do my timesheet", "time for today", "time for last week", "track time for week ending 7/3", "run my time process", or any request to reconcile hours against the Master Time Tracking workbook.
+description: Reconstruct Aaron's time tracking for any date range from Outlook calendar, Zoom history, and the Time Tracking calendar, then generate an .ics file of properly named events for import. Supports today, yesterday, this week, last week, week ending X, multi-week spans like last two weeks or a full month, or any explicit date range. Use this skill whenever the user mentions time tracking, timesheets, logging hours, booking time, time entry, a time breakdown by customer or bucket, or filling out time for a day or week. Also trigger on phrases like "track my time", "log my hours", "do my timesheet", "time for today", "time for last week", "track time for week ending 7/3", or "run my time process".
 ---
 
 # Weekly Time Tracking
@@ -33,11 +33,10 @@ On every run, after confirming Drive is available:
 ### First-run setup
 
 1. Locate or create the `Claude Outputs` folder in Drive root. Then locate or create the `Configs` subfolder within it.
-2. Prompt the user for any required values that cannot be defaulted (see schema below).
-3. Build the config JSON with defaults filled in and user-supplied values inserted.
-4. Upload the file as `Time Tracking Config.json` to the `Configs` folder using `Google Drive:create_file` with `contentMimeType: application/json` and `disableConversionToGoogleType: true`.
-5. Store the returned file ID in memory: `memory_user_edits(command="add", control="time_tracking_config_id: [ID]")`.
-6. Confirm to the user: share the Drive URL and note which values were defaulted so they can review.
+2. Build the config JSON with all fields set to their defaults.
+3. Upload the file as `Time Tracking Config.json` to the `Configs` folder using `Google Drive:create_file` with `contentMimeType: application/json` and `disableConversionToGoogleType: true`.
+4. Store the returned file ID in memory: `memory_user_edits(command="add", control="time_tracking_config_id: [ID]")`.
+5. Confirm to the user: share the Drive URL and note that all values are defaulted and can be adjusted by asking the skill to update them.
 
 ### Updating the config
 
@@ -56,7 +55,6 @@ Any time a config value changes during a run (user corrects a value, a new accou
 
 ```json
 {
-  "master_workbook_drive_id": "",
   "time_tracking_calendar_name": "Time Tracking",
   "daily_minimum_hours": 8.0,
   "personal_calendar_exclusion_category": "z-Personal",
@@ -69,7 +67,6 @@ Field definitions:
 
 | Field | Default | Required | Description |
 |---|---|---|---|
-| `master_workbook_drive_id` | none | **Yes** | Drive file ID for "Master Time Tracking.xlsx". Cannot be defaulted; prompt if missing. |
 | `time_tracking_calendar_name` | `"Time Tracking"` | No | Name of the Outlook calendar used as the target for .ics import. |
 | `daily_minimum_hours` | `8.0` | No | Minimum hours required per complete workday. |
 | `personal_calendar_exclusion_category` | `"z-Personal"` | No | Outlook calendar category to skip when gathering activity. |
@@ -100,9 +97,7 @@ The daily minimum applies to each complete workday in the range (from `daily_min
 
 ### 2. Load config and resolve account status
 
-Load the config file as described in the Config file section above. Extract `master_workbook_drive_id` and other settings for use in subsequent steps.
-
-Then fetch the workbook from Drive using `master_workbook_drive_id`. Read the Config sheet to get the current customer list and name patterns. If the Drive fetch fails, use `references/category-mappings.md` as the fallback for pattern syntax only.
+Load the config file as described in the Config file section above. Extract settings for use in subsequent steps.
 
 Then fetch live subscriber status from the Enterprise Success Customers portfolio in Asana. Use `get_items_for_portfolio` with `opt_fields=name,custom_fields` and read the `Non-Subscriber?` custom field on each item. The portfolio GID and field GID are stored in memory; do not put them in the config file.
 
