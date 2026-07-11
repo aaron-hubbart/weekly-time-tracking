@@ -1,0 +1,17 @@
+# Runtime-generated files
+scripts/patterns.json
+
+# Output files
+*.ics
+*.json
+!scripts/patterns.json.example
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env

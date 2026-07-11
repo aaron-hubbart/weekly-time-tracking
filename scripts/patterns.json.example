@@ -1,0 +1,6 @@
+[
+  {"pattern": "c :: acme", "bucket": "Acme Corp"},
+  {"pattern": "ns :: widgetco", "bucket": "WidgetCo"},
+  {"pattern": "admin :: general", "bucket": "Overhead"},
+  {"pattern": "admin :: 1:1", "bucket": "1:1"}
+]
