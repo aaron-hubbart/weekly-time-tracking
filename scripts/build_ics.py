@@ -3,17 +3,13 @@
 
 Usage:
     python build_ics.py entries.json output.ics [--logged logged.json] [--daily-min 8.0]
+                        [--config customers.json]
 
 entries.json: list of [name, "YYYY-MM-DD HH:MM", minutes] for NEW events (times in UTC).
 logged.json (optional): list of ["YYYY-MM-DD", minutes] for events already in the
 Time Tracking calendar, counted toward daily totals but not written to the .ics.
-
-Event names must follow one of two formats:
-  - Customer:  "C :: <Token>" or "NS :: <Token>" (subscriber or non-subscriber)
-  - Internal:  "Admin :: <Bucket>"
-
-Patterns are read from a patterns file (default: patterns.json) generated at runtime
-from the workbook's Config sheet. Do not hardcode customer names or tokens here.
+customers.json (optional): list of customer name strings read from the workbook Config sheet.
+  If omitted, falls back to DEFAULT_CUSTOMERS.
 
 Validation (hard failures):
   - every name matches exactly one category pattern
@@ -23,37 +19,49 @@ Prints a per-day, per-bucket summary on success.
 """
 import json
 import math
-import re
 import sys
 import datetime
 from collections import defaultdict
 
+# Fallback only — prefer passing --config sourced from the workbook Config sheet.
+DEFAULT_CUSTOMERS = ["Bank", "EY", "First American", "JPMC", "Optum", "Toyota", "UPS", "Wells"]
 
-def load_patterns(path="patterns.json"):
-    """Load category patterns from a file generated at runtime.
+# Aliases: additional patterns that map to a canonical customer name.
+# Key = pattern substring (lowercase), value = canonical customer name.
+CUSTOMER_ALIASES = {
+    "c :: first am": "First American",
+    "c::first am": "First American",
+}
 
-    Expected format: list of {"pattern": str, "bucket": str}
-    where pattern is a case-insensitive substring to match against the event name.
-    Falls back to basic C :: / NS :: / Admin :: prefix detection if the file is absent.
-    """
-    try:
-        with open(path) as f:
-            return [(p["pattern"].lower(), p["bucket"]) for p in json.load(f)]
-    except (FileNotFoundError, KeyError, json.JSONDecodeError):
-        return []
+INTERNAL_PATTERNS = [
+    ("admin :: onboarding", "TAM Onboarding"), ("admin::onboarding", "TAM Onboarding"),
+    ("training :: onboarding", "TAM Onboarding"), ("training::onboarding", "TAM Onboarding"),
+    ("admin :: training", "TAM Enablement"), ("admin::training", "TAM Enablement"),
+    ("admin :: team meeting", "Team Meetings"), ("admin::team meeting", "Team Meetings"),
+    ("admin :: 1:1", "1:1"), ("admin::1:1", "1:1"),
+    ("admin :: kickoff", "Kickoff"), ("admin::kickoff", "Kickoff"),
+    ("admin :: general", "Overhead"), ("admin::general", "Overhead"),
+    ("admin :: travel", "Internal Travel"), ("admin::travel", "Internal Travel"),
+    ("admin :: pto", "Private Absence"), ("admin::pto", "Private Absence"),
+    ("admin :: ooo", "Private Absence"), ("admin::ooo", "Private Absence"),
+    ("admin :: holiday", "Private Absence"), ("admin::holiday", "Private Absence"),
+]
+
+
+def build_patterns(customers):
+    """Build the full pattern list from a customer name list."""
+    patterns = []
+    for c in customers:
+        patterns.append((f"c :: {c.lower()}", c))
+        patterns.append((f"c::{c.lower()}", c))
+    for pattern, bucket in CUSTOMER_ALIASES.items():
+        patterns.append((pattern, bucket))
+    patterns.extend(INTERNAL_PATTERNS)
+    return patterns
 
 
 def categorize(name, patterns):
-    """Return the set of matching buckets for a given event name."""
-    name_lower = name.lower()
-    if patterns:
-        return {b for p, b in patterns if p in name_lower}
-    # Fallback: accept any name that starts with a valid prefix
-    if re.match(r"^(c|ns)\s*::\s*\S", name_lower):
-        return {"Customer"}
-    if re.match(r"^admin\s*::\s*\S", name_lower):
-        return {"Internal"}
-    return set()
+    return {b for p, b in patterns if p in name.lower()}
 
 
 def hours(mins):
@@ -68,15 +76,17 @@ def main():
     out_path = args[1]
     logged = []
     daily_min = 8.0
-    patterns_path = "patterns.json"
+    customers = list(DEFAULT_CUSTOMERS)
     if "--logged" in args:
         logged = json.load(open(args[args.index("--logged") + 1]))
     if "--daily-min" in args:
         daily_min = float(args[args.index("--daily-min") + 1])
-    if "--patterns" in args:
-        patterns_path = args[args.index("--patterns") + 1]
-
-    patterns = load_patterns(patterns_path)
+    if "--config" in args:
+        customers = json.load(open(args[args.index("--config") + 1]))
+        print(f"Loaded {len(customers)} customers from config: {', '.join(customers)}")
+    else:
+        print(f"No --config supplied; using default customer list: {', '.join(customers)}")
+    patterns = build_patterns(customers)
 
     errors = []
     daily = defaultdict(lambda: defaultdict(float))
