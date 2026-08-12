@@ -3,13 +3,15 @@
 
 Usage:
     python build_ics.py entries.json output.ics [--logged logged.json] [--daily-min 8.0]
-                        [--config customers.json]
 
 entries.json: list of [name, "YYYY-MM-DD HH:MM", minutes] for NEW events (times in UTC).
+  IMPORTANT: Times must be in UTC. For Aaron in Central time:
+    - CDT (summer): add 5 hours to local time (8am CDT = 13:00 UTC)
+    - CST (winter): add 6 hours to local time (8am CST = 14:00 UTC)
+  The script writes all times with Z suffix (UTC); Outlook displays in user's local timezone.
+
 logged.json (optional): list of ["YYYY-MM-DD", minutes] for events already in the
 Time Tracking calendar, counted toward daily totals but not written to the .ics.
-customers.json (optional): list of customer name strings read from the workbook Config sheet.
-  If omitted, falls back to DEFAULT_CUSTOMERS.
 
 Validation (hard failures):
   - every name matches exactly one category pattern
@@ -23,17 +25,13 @@ import sys
 import datetime
 from collections import defaultdict
 
-# Fallback only — prefer passing --config sourced from the workbook Config sheet.
-DEFAULT_CUSTOMERS = ["Bank", "EY", "First American", "JPMC", "Optum", "Toyota", "UPS", "Wells"]
-
-# Aliases: additional patterns that map to a canonical customer name.
-# Key = pattern substring (lowercase), value = canonical customer name.
-CUSTOMER_ALIASES = {
-    "c :: first am": "First American",
-    "c::first am": "First American",
-}
-
-INTERNAL_PATTERNS = [
+CUSTOMERS = ["Bank", "EY", "First American", "JPMC", "Toyota", "UPS", "Wells"]
+PATTERNS = []  # (pattern_lower, bucket)
+for c in CUSTOMERS:
+    PATTERNS.append((f"c :: {c.lower()}", c))
+    PATTERNS.append((f"c::{c.lower()}", c))
+PATTERNS += [
+    ("c :: first am", "First American"), ("c::first am", "First American"),
     ("admin :: onboarding", "TAM Onboarding"), ("admin::onboarding", "TAM Onboarding"),
     ("training :: onboarding", "TAM Onboarding"), ("training::onboarding", "TAM Onboarding"),
     ("admin :: training", "TAM Enablement"), ("admin::training", "TAM Enablement"),
@@ -48,20 +46,8 @@ INTERNAL_PATTERNS = [
 ]
 
 
-def build_patterns(customers):
-    """Build the full pattern list from a customer name list."""
-    patterns = []
-    for c in customers:
-        patterns.append((f"c :: {c.lower()}", c))
-        patterns.append((f"c::{c.lower()}", c))
-    for pattern, bucket in CUSTOMER_ALIASES.items():
-        patterns.append((pattern, bucket))
-    patterns.extend(INTERNAL_PATTERNS)
-    return patterns
-
-
-def categorize(name, patterns):
-    return {b for p, b in patterns if p in name.lower()}
+def categorize(name):
+    return {b for p, b in PATTERNS if p in name.lower()}
 
 
 def hours(mins):
@@ -76,22 +62,15 @@ def main():
     out_path = args[1]
     logged = []
     daily_min = 8.0
-    customers = list(DEFAULT_CUSTOMERS)
     if "--logged" in args:
         logged = json.load(open(args[args.index("--logged") + 1]))
     if "--daily-min" in args:
         daily_min = float(args[args.index("--daily-min") + 1])
-    if "--config" in args:
-        customers = json.load(open(args[args.index("--config") + 1]))
-        print(f"Loaded {len(customers)} customers from config: {', '.join(customers)}")
-    else:
-        print(f"No --config supplied; using default customer list: {', '.join(customers)}")
-    patterns = build_patterns(customers)
 
     errors = []
     daily = defaultdict(lambda: defaultdict(float))
     for name, start, mins in entries:
-        buckets = categorize(name, patterns)
+        buckets = categorize(name)
         if len(buckets) != 1:
             errors.append(f"'{name}': matches {len(buckets)} patterns ({buckets or 'none'})")
             continue

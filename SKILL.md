@@ -29,15 +29,7 @@ The 8.0-hour daily minimum applies to each complete workday in the range. For "t
 
 ### 2. Read the config
 
-Fetch the master workbook from Google Drive (file "Master Time Tracking.xlsx", ID `1XFjntsGL0MIvwnsgjg7-Ktk-vRr43Se8`, in the Time Tracking folder). Read the Config sheet to get the current customer list and name patterns.
-
-Extract the customer name list from the Config sheet's pattern row (the row containing values like `C :: Bank`, `C :: EY`, etc.) and write it as a JSON array to `customers.json` in the working directory. Pass this file to `scripts/build_ics.py` via the `--config` flag so the script validates against the live customer list rather than any hardcoded fallback. Example `customers.json`:
-
-```json
-["Bank", "EY", "First American", "JPMC", "Optum", "Toyota", "UPS", "Wells"]
-```
-
-If the Drive fetch fails, fall back to `references/category-mappings.md` as the mapping source and omit `--config` (the script's `DEFAULT_CUSTOMERS` will be used with a warning). If Config has changed (new customers, removed customers), the reference file is stale; follow Config and tell the user.
+Fetch the master workbook from Google Drive (file "Master Time Tracking.xlsx", ID `1XFjntsGL0MIvwnsgjg7-Ktk-vRr43Se8`, in the Time Tracking folder). Read the Config sheet to get the current customer list and name patterns. If the Drive fetch fails or the Config matches what is documented, use `references/category-mappings.md` as the mapping source. If Config has changed (new customers, new patterns), the reference file is stale; follow Config and tell the user.
 
 ### 3. Check what is already logged
 
@@ -57,26 +49,15 @@ Tentative calendar events with no Zoom evidence of attendance do not count.
 
 Map each activity to exactly one bucket using `references/category-mappings.md`. Event durations must be multiples of 30 minutes so hours land in 0.5 increments. Use actual durations where Zoom provides them, rounded to the nearest 0.5 hour; drop fragments under 15 minutes or fold them into an adjacent related entry.
 
-Customer names not present in the workbook Config (non-standard or one-off accounts) must go into `logged.json` only, not `entries.json`, to avoid pattern validation failures. Flag these to the user.
-
 ### 6. Confirm the gap allocation
 
 Sum the confirmed hours per day and present a concise breakdown. Each complete workday must reach at least 8.0 hours (40.0 for a full Mon-Fri week). Ask the user, with the interactive question interface, where unscheduled heads-down time went (customer work, internal tooling, toolkit PRs, and so on) and which internal bucket applies if unclear. Default unclear internal work to Admin :: General. Distribute the fill so each day reaches exactly 8.0 unless the user says otherwise.
 
-Company holidays (OOO all-day events) are excluded from the 8.0h daily minimum. Do not pass those dates in `logged.json` or `entries.json`; the script will flag any covered day below the minimum.
-
 ### 7. Generate the .ics
 
-Write `entries.json` and `logged.json`, then run `scripts/build_ics.py`:
+Write an entries list and run `scripts/build_ics.py`. The script validates that every name matches exactly one pattern, every duration is a 30-minute multiple, and every day (new entries plus already-logged hours passed via --logged) reaches the daily minimum. Fix validation failures rather than overriding them. Schedule new events at plausible times that do not overlap the already-logged entries; only the date affects the rollup, but a clean calendar matters.
 
-```
-python scripts/build_ics.py entries.json output.ics \
-  --config customers.json \
-  --logged logged.json \
-  --daily-min 8.0
-```
-
-The script validates that every name matches exactly one pattern, every duration is a 30-minute multiple, and every day (new entries plus already-logged hours passed via --logged) reaches the daily minimum. Fix validation failures rather than overriding them. Schedule new events at plausible times that do not overlap the already-logged entries; only the date affects the rollup, but a clean calendar matters.
+**Important: Times in entries.json must be in UTC.** The build_ics.py script writes all times with Z suffix (UTC). Since Aaron is in Central time (CDT = UTC-5, CST = UTC-6), add the offset to local times before building the entry list. For example, an 8am CDT event is 1pm UTC (13:00). Winter months use CST (UTC-6), so 8am CST = 2pm UTC (14:00).
 
 ### 8. Deliver
 
